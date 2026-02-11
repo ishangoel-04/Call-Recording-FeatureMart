@@ -21,3 +21,6 @@ build/
 # Audio files (keep folder via .gitkeep)
 audios/*
 !audios/.gitkeep
+
+*.csv
+*.xlsx
