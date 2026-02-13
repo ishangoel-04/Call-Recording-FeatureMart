@@ -21,6 +21,10 @@ build/
 # Audio files (keep folder via .gitkeep)
 audios/*
 !audios/.gitkeep
+fetched_audios/*
 
 *.csv
 *.xlsx
+
+# Playwright browser profile (session/cookies for Credgenics)
+playwright_credgenics_profile/

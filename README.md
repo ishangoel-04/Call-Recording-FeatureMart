@@ -25,3 +25,12 @@ python Transcription.py
 # or
 bash run.sh
 ```
+
+### Credgenics auth
+
+The script uses the **Credgenics API**:
+
+1. POST to `https://apiprod.credgenics.com/user/public/access-token` with `client_id`, `client_secret`, and optional `token_expiry_duration` (default 900 seconds).
+2. Uses the returned `access_token` as `Authorization: Bearer <token>` for each recording download.
+
+Set in `.env`: `CREDGENICS_CLIENT_ID` and `CREDGENICS_CLIENT_SECRET` (obtain from Credgenics Support / your CSM; valid 6 months).

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import tempfile
@@ -5,7 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 from faster_whisper import WhisperModel
+
+load_dotenv()
 
 # Logging with timestamps (date + time)
 logging.basicConfig(
@@ -19,36 +23,51 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 CSV_PATH = SCRIPT_DIR / "sql_1_2026-02-11T1157.csv"
 OUTPUT_EXCEL = SCRIPT_DIR / "transcriptions_output.xlsx"
 
-# Auth support for recording URLs (Credgenics often requires auth).
-# Set these in your shell or a `.env` (if you load it yourself):
-#   - RECORDING_AUTH_TOKEN="...."
-#   - RECORDING_AUTH_SCHEME="Bearer"   (or "Token", etc.)
-#   - RECORDING_COOKIE="cookie1=a; cookie2=b"
-AUTH_TOKEN = os.getenv("RECORDING_AUTH_TOKEN", "").strip()
-AUTH_SCHEME = os.getenv("RECORDING_AUTH_SCHEME", "Bearer").strip()
-AUTH_COOKIE = os.getenv("RECORDING_COOKIE", "").strip()
+# Credgenics API: client_id + client_secret -> access_token (Bearer) for downloads
+AUTH_URL = "https://apiprod.credgenics.com/user/public/access-token"
+CREDGENICS_CLIENT_ID = os.getenv("CREDGENICS_CLIENT_ID", "").strip()
+CREDGENICS_CLIENT_SECRET = os.getenv("CREDGENICS_CLIENT_SECRET", "").strip()
+CREDGENICS_TOKEN_EXPIRY = int(os.getenv("CREDGENICS_TOKEN_EXPIRY", "900"))
 
 
-def build_request_headers() -> dict:
-    headers: dict = {}
-    if AUTH_TOKEN:
-        # Most common: Authorization: Bearer <token>
-        headers["Authorization"] = f"{AUTH_SCHEME} {AUTH_TOKEN}".strip()
-    if AUTH_COOKIE:
-        headers["Cookie"] = AUTH_COOKIE
-    return headers
-
-
-def download_recording(url: str, dest_path: Path) -> tuple[bool, str]:
-    """Download recording from URL to dest_path. Returns (ok, error_message)."""
+def get_access_token() -> str | None:
+    """Obtain access token from Credgenics API. Returns token or None on failure."""
+    if not CREDGENICS_CLIENT_ID or not CREDGENICS_CLIENT_SECRET:
+        log.error("Set CREDGENICS_CLIENT_ID and CREDGENICS_CLIENT_SECRET in .env")
+        return None
+    payload = json.dumps({
+        "client_id": CREDGENICS_CLIENT_ID,
+        "client_secret": CREDGENICS_CLIENT_SECRET,
+        "token_expiry_duration": CREDGENICS_TOKEN_EXPIRY,
+    })
+    headers = {"accept": "application/json", "content-type": "application/json"}
     try:
-        headers = build_request_headers()
+        r = requests.post(AUTH_URL, headers=headers, data=payload, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        token = data.get("access_token")
+        if token:
+            log.info("Access token obtained.")
+            return token
+        log.error("No access_token in response: %s", data)
+        return None
+    except Exception as e:
+        log.error("Failed to get access token: %s", e)
+        return None
+
+
+def download_recording(url: str, dest_path: Path, *, access_token: str | None = None) -> tuple[bool, str]:
+    """Download recording from URL to dest_path. Uses Bearer token if provided."""
+    try:
+        headers = {}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+            headers["Accept"] = "application/octet-stream, audio/*, */*"
         r = requests.get(url, headers=headers or None, timeout=60, stream=True, allow_redirects=True)
         r.raise_for_status()
 
         content_type = (r.headers.get("Content-Type") or "").lower()
         if "text/html" in content_type or "application/json" in content_type:
-            # Very likely an auth/login response, not an audio file.
             return False, f"Unexpected content-type: {content_type or 'unknown'} (auth required?)"
 
         with open(dest_path, "wb") as f:
@@ -85,7 +104,6 @@ def main():
         log.error("CSV has no 'recording_link' column")
         return
 
-    # Rows that have a non-empty recording link
     mask = df["recording_link"].notna() & (df["recording_link"].astype(str).str.strip() != "")
     links_df = df.loc[mask].copy()
     if links_df.empty:
@@ -93,6 +111,13 @@ def main():
         return
 
     log.info("Found %d recordings to process", len(links_df))
+
+    access_token = None
+    log.info("Obtaining Credgenics access token...")
+    access_token = get_access_token()
+    if not access_token:
+        log.error("Could not obtain access token. Check CREDGENICS_CLIENT_ID and CREDGENICS_CLIENT_SECRET in .env")
+        return
 
     log.info("Loading Whisper model (large-v3)...")
     try:
@@ -111,7 +136,7 @@ def main():
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
-            ok, dl_err = download_recording(url, tmp_path)
+            ok, dl_err = download_recording(url, tmp_path, access_token=access_token)
             if not ok:
                 results.append({
                     "event_id": event_id,
