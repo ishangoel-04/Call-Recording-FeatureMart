@@ -29,25 +29,9 @@ MAX_RECORDINGS = int(os.getenv("MAX_RECORDINGS", "50"))
 API_REQUEST_TIMEOUT = int(os.getenv("API_REQUEST_TIMEOUT", "30"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "60"))
 
-# Headers matching the curl request
-def _api_headers(company_id: str) -> dict:
-    return {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
-        "authenticationtoken": AUTH_TOKEN,
-        "cache-control": "no-cache",
-        "origin": "https://app.credgenics.com",
-        "pragma": "no-cache",
-        "referer": "https://app.credgenics.com/",
-        "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Android"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "user-agent": "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 CrKey/1.54.248666",
-        "x-company-id": company_id,
-    }
+def _api_headers() -> dict:
+    """Minimal headers for recording API (matches curl: authenticationtoken only)."""
+    return {"authenticationtoken": AUTH_TOKEN}
 
 
 def _talk_time_duration_to_seconds(value) -> float:
@@ -92,7 +76,7 @@ def get_recording_public_url(recording_id: str, company_id: str) -> str | None:
     """Call the recording API and return the public URL from response data."""
     url = f"{RECORDING_API_BASE}/{recording_id}"
     params = {"company_id": company_id}
-    headers = _api_headers(company_id)
+    headers = _api_headers()
     try:
         r = requests.get(url, params=params, headers=headers, timeout=API_REQUEST_TIMEOUT)
         r.raise_for_status()
@@ -137,6 +121,22 @@ def _parse_ts(value) -> pd.Timestamp | None:
         return None
 
 
+def _detect_audio_format(audio_path: Path) -> str:
+    """Detect actual audio format from file header (API may return WAV with .mp3 extension)."""
+    try:
+        with open(audio_path, "rb") as f:
+            header = f.read(12)
+        if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+            return "wav"
+        if header[:3] == b"ID3" or (len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+            return "mp3"
+        if header[:4] == b"fLaC":
+            return "flac"
+    except Exception:
+        pass
+    return audio_path.suffix.lower().lstrip(".") or "mp3"
+
+
 def crop_audio_by_timestamps(
     audio_path: Path,
     call_start: pd.Timestamp | None,
@@ -155,19 +155,16 @@ def crop_audio_by_timestamps(
     try:
         start_ms = int(start_sec * 1000)
         end_ms = int(end_sec * 1000)
-        ext = audio_path.suffix.lower()
-        if ext == ".mp3":
-            audio = AudioSegment.from_mp3(str(audio_path))
-        elif ext in (".wav", ".m4a", ".ogg", ".webm"):
-            audio = AudioSegment.from_file(str(audio_path), format=ext.lstrip("."))
-        else:
-            audio = AudioSegment.from_file(str(audio_path))
+        # Use detected format: API often returns WAV even when URL/extension is .mp3
+        fmt = _detect_audio_format(audio_path)
+        audio = AudioSegment.from_file(str(audio_path), format=fmt)
         cropped = audio[start_ms:end_ms]
-        cropped.export(str(audio_path), format=ext.lstrip(".") or "mp3")
+        out_fmt = (audio_path.suffix.lower().lstrip(".")) or "mp3"
+        cropped.export(str(audio_path), format=out_fmt)
         log.info("Cropped %s to %.1f–%.1f s", audio_path.name, start_sec, end_sec)
         return True
     except Exception as e:
-        log.warning("Crop failed for %s: %s", audio_path.name, e)
+        log.warning("Crop failed for %s: %s", audio_path.name, str(e).split("\n")[0][:120])
         return False
 
 
