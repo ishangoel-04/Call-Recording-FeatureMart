@@ -8,17 +8,15 @@ from sarvamai import SarvamAI
 load_dotenv()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-AUDIO_FILE = SCRIPT_DIR / "audios" / "AT00071_7e0e065c-04d6-4c05-8f51-451225788f65.mp3"
-OUTPUT_FILE = SCRIPT_DIR / "output.txt"
+AUDIO_FILE = SCRIPT_DIR / os.getenv("AUDIO_FILE", "audios/audio.mp3").strip()
+OUTPUT_FILE = SCRIPT_DIR / os.getenv("TRANSCRIPT_OUTPUT_FILE", "output.txt").strip()
 
 client = SarvamAI(api_subscription_key=os.getenv("SARVAM_API_KEY"))
 
 job = client.speech_to_text_job.create_job(
-    model="saaras:v3",
-    mode="translate",
-    language_code="en-IN",
-    # with_diarization=True,
-    # num_speakers=2
+    model=os.getenv("TRANSCRIPTION_MODEL", "saaras:v3"),
+    mode=os.getenv("TRANSCRIPTION_MODE", "translate"),
+    language_code=os.getenv("TRANSCRIPTION_LANGUAGE_CODE", "en-IN"),
 )
 
 job.upload_files(file_paths=[str(AUDIO_FILE)])
